@@ -129,7 +129,7 @@ local function buildLobby()
 	-- Some cover to practise strafing around.
 	box(folder, o, -30, 10, 8, 5, 8, CRATE, Enum.Material.WoodPlanks)
 	box(folder, o, 30, 10, 8, 5, 8, CRATE, Enum.Material.WoodPlanks)
-	box(folder, o, 0, 25, 20, 4, 3, COVER)
+	box(folder, o, -30, 30, 14, 4, 3, COVER)
 	box(folder, o, -45, 35, 3, 8, 20, COVER)
 	box(folder, o, 45, 35, 3, 8, 20, COVER)
 	ramp(folder, o, -20, 40, 10, 16, 6, COVER)

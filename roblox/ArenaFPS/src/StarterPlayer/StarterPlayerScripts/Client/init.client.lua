@@ -34,12 +34,28 @@ local function disableCoreGui()
 end
 task.spawn(disableCoreGui)
 
-player.CameraMode = Enum.CameraMode.LockFirstPerson
-player.DevEnableMouseLock = false
+-- Runs a startup step; a failure is reported in Output but doesn't stop the
+-- rest of the client from starting.
+local function safe(name, fn, ...)
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		warn("[ArenaFPS] " .. name .. " failed: " .. tostring(err))
+	end
+	return ok
+end
 
-HUD.init()
-Movement.init()
-WeaponController.init()
+safe("CameraMode", function()
+	player.CameraMode = Enum.CameraMode.LockFirstPerson
+end)
+-- Shift is sprint, so turn off shift-lock. Not every client allows this to be
+-- set from a LocalScript, hence the pcall (the place file also disables it).
+safe("DevEnableMouseLock", function()
+	player.DevEnableMouseLock = false
+end)
+
+safe("HUD", HUD.init)
+safe("Movement", Movement.init)
+safe("WeaponController", WeaponController.init)
 
 Effects.onExplosionNearby = function(strength)
 	if strength > 0 then
