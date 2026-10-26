@@ -1,0 +1,1052 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Item class="Folder" referent="RBX00000020">
+		<Properties>
+			<string name="Name">Shared</string>
+		</Properties>
+		<Item class="ModuleScript" referent="RBX0000001B">
+			<Properties>
+				<string name="Name">Config</string>
+				<ProtectedString name="Source"><![CDATA[-- Config: every tunable number in the game lives here.
+-- Server and client both read this, so stats stay in sync.
+
+local Config = {}
+
+---------------------------------------------------------------------------
+-- Match
+---------------------------------------------------------------------------
+
+Config.Match = {
+	MinPlayers = 2,           -- players needed before a match starts
+	IntermissionTime = 10,    -- lobby countdown before a match
+	RoundsToWin = 5,          -- first team to this many rounds wins
+	RoundTime = 90,           -- seconds per round before it times out
+	FreezeTime = 3,           -- players are frozen this long at round start
+	RoundEndTime = 4,         -- pause between rounds
+	MatchEndTime = 8,         -- victory screen length
+	LobbyRespawnTime = 3,     -- respawn delay in the lobby
+}
+
+---------------------------------------------------------------------------
+-- Movement
+---------------------------------------------------------------------------
+
+Config.Movement = {
+	WalkSpeed = 16,
+	SprintSpeed = 24,
+	CrouchSpeed = 9,
+	SlideSpeed = 42,          -- burst speed at the start of a slide
+	SlideDuration = 0.75,
+	SlideCooldown = 0.9,
+	CrouchCameraOffset = -1.4,
+	SlideCameraOffset = -1.8,
+	JumpPower = 50,
+}
+
+---------------------------------------------------------------------------
+-- Camera
+---------------------------------------------------------------------------
+
+Config.Camera = {
+	DefaultFOV = 75,
+	SprintFOV = 82,
+	BobWalk = 0.06,
+	BobSprint = 0.12,
+}
+
+---------------------------------------------------------------------------
+-- Keybinds
+---------------------------------------------------------------------------
+
+Config.Keys = {
+	Primary = Enum.KeyCode.One,
+	Secondary = Enum.KeyCode.Two,
+	Melee = Enum.KeyCode.Three,
+	Utility = Enum.KeyCode.Four,
+	QuickThrow = Enum.KeyCode.G,
+	Reload = Enum.KeyCode.R,
+	Sprint = Enum.KeyCode.LeftShift,
+	Crouch = Enum.KeyCode.LeftControl,
+	CrouchAlt = Enum.KeyCode.C,
+	Loadout = Enum.KeyCode.M,
+}
+
+Config.SlotOrder = { "Primary", "Secondary", "Melee", "Utility" }
+
+---------------------------------------------------------------------------
+-- Sounds
+-- Built-in Roblox sounds are used as placeholders. Swap any of these for
+-- sound IDs from the Creator Store ("rbxassetid://123456") for real gun audio.
+-- Set an entry to "" to silence it.
+---------------------------------------------------------------------------
+
+Config.Sounds = {
+	RifleShot = "rbxasset://sounds/paintball.wav",
+	PistolShot = "rbxasset://sounds/paintball.wav",
+	ShotgunShot = "rbxasset://sounds/paintball.wav",
+	SniperShot = "rbxasset://sounds/paintball.wav",
+	Reload = "rbxasset://sounds/unsheath.wav",
+	Equip = "rbxasset://sounds/unsheath.wav",
+	Swing = "rbxasset://sounds/swordslash.wav",
+	MeleeHit = "rbxasset://sounds/swordlunge.wav",
+	Hitmarker = "rbxasset://sounds/electronicpingshort.wav",
+	Throw = "rbxasset://sounds/swordlunge.wav",
+	Empty = "rbxasset://sounds/electronicpingshort.wav",
+}
+
+---------------------------------------------------------------------------
+-- Weapons
+--
+-- Kind:      "Gun", "Melee" or "Throwable"
+-- FireMode:  "Auto", "Semi", "Pump", "Bolt"
+-- Damage:    per bullet (per pellet for shotguns)
+-- Falloff:   damage scales from 1 at Start studs down to Min at End studs
+-- Spread:    degrees of cone; Hip when not aiming, Ads when aiming
+-- Recoil:    Pitch/Yaw in degrees per shot, Kick = viewmodel push-back
+---------------------------------------------------------------------------
+
+Config.Weapons = {
+	-- Primaries -----------------------------------------------------------
+	AssaultRifle = {
+		DisplayName = "Assault Rifle",
+		Slot = "Primary",
+		Kind = "Gun",
+		FireMode = "Auto",
+		RPM = 620,
+		Damage = 24,
+		HeadMultiplier = 1.5,
+		Pellets = 1,
+		MagSize = 30,
+		Reserve = 180,
+		ReloadTime = 2.0,
+		EquipTime = 0.45,
+		Range = 700,
+		Falloff = { Start = 70, End = 220, Min = 0.65 },
+		Spread = { Hip = 2.4, Ads = 0.35, Move = 1.6, Air = 4 },
+		Recoil = { Pitch = 1.05, Yaw = 0.45, Kick = 0.14 },
+		AdsFOV = 55,
+		AdsSpeed = 12,
+		SpeedMultiplier = 0.95,
+		Sound = "RifleShot",
+	},
+	SMG = {
+		DisplayName = "SMG",
+		Slot = "Primary",
+		Kind = "Gun",
+		FireMode = "Auto",
+		RPM = 900,
+		Damage = 16,
+		HeadMultiplier = 1.4,
+		Pellets = 1,
+		MagSize = 35,
+		Reserve = 210,
+		ReloadTime = 1.7,
+		EquipTime = 0.35,
+		Range = 450,
+		Falloff = { Start = 35, End = 120, Min = 0.55 },
+		Spread = { Hip = 2.8, Ads = 1.0, Move = 0.8, Air = 3 },
+		Recoil = { Pitch = 0.6, Yaw = 0.55, Kick = 0.09 },
+		AdsFOV = 62,
+		AdsSpeed = 15,
+		SpeedMultiplier = 1.0,
+		Sound = "PistolShot",
+	},
+	Shotgun = {
+		DisplayName = "Shotgun",
+		Slot = "Primary",
+		Kind = "Gun",
+		FireMode = "Pump",
+		RPM = 72,
+		Damage = 11,
+		HeadMultiplier = 1.25,
+		Pellets = 9,
+		MagSize = 6,
+		Reserve = 36,
+		ReloadTime = 2.6,
+		EquipTime = 0.5,
+		Range = 160,
+		Falloff = { Start = 15, End = 60, Min = 0.3 },
+		Spread = { Hip = 6.5, Ads = 4.8, Move = 0.5, Air = 1.5 },
+		Recoil = { Pitch = 5.5, Yaw = 1.2, Kick = 0.45 },
+		AdsFOV = 62,
+		AdsSpeed = 10,
+		SpeedMultiplier = 0.95,
+		Sound = "ShotgunShot",
+	},
+	Sniper = {
+		DisplayName = "Sniper",
+		Slot = "Primary",
+		Kind = "Gun",
+		FireMode = "Bolt",
+		RPM = 45,
+		Damage = 90,
+		HeadMultiplier = 2.0,
+		Pellets = 1,
+		MagSize = 5,
+		Reserve = 30,
+		ReloadTime = 3.0,
+		EquipTime = 0.6,
+		Range = 1500,
+		Falloff = { Start = 1500, End = 1500, Min = 1 },
+		Spread = { Hip = 9, Ads = 0, Move = 4, Air = 10 },
+		Recoil = { Pitch = 6, Yaw = 0.8, Kick = 0.5 },
+		AdsFOV = 22,
+		AdsSpeed = 8,
+		SpeedMultiplier = 0.85,
+		Scope = true,
+		Sound = "SniperShot",
+	},
+
+	-- Secondaries ---------------------------------------------------------
+	Handgun = {
+		DisplayName = "Handgun",
+		Slot = "Secondary",
+		Kind = "Gun",
+		FireMode = "Semi",
+		RPM = 420,
+		Damage = 22,
+		HeadMultiplier = 1.6,
+		Pellets = 1,
+		MagSize = 12,
+		Reserve = 72,
+		ReloadTime = 1.4,
+		EquipTime = 0.3,
+		Range = 500,
+		Falloff = { Start = 40, End = 140, Min = 0.6 },
+		Spread = { Hip = 1.8, Ads = 0.5, Move = 0.9, Air = 3 },
+		Recoil = { Pitch = 1.8, Yaw = 0.5, Kick = 0.18 },
+		AdsFOV = 62,
+		AdsSpeed = 16,
+		SpeedMultiplier = 1.05,
+		Sound = "PistolShot",
+	},
+	Revolver = {
+		DisplayName = "Revolver",
+		Slot = "Secondary",
+		Kind = "Gun",
+		FireMode = "Semi",
+		RPM = 130,
+		Damage = 48,
+		HeadMultiplier = 1.8,
+		Pellets = 1,
+		MagSize = 6,
+		Reserve = 36,
+		ReloadTime = 2.4,
+		EquipTime = 0.4,
+		Range = 600,
+		Falloff = { Start = 50, End = 180, Min = 0.7 },
+		Spread = { Hip = 1.6, Ads = 0.25, Move = 1.2, Air = 4 },
+		Recoil = { Pitch = 4.2, Yaw = 0.9, Kick = 0.3 },
+		AdsFOV = 58,
+		AdsSpeed = 13,
+		SpeedMultiplier = 1.0,
+		Sound = "SniperShot",
+	},
+
+	-- Melee ----------------------------------------------------------------
+	Knife = {
+		DisplayName = "Knife",
+		Slot = "Melee",
+		Kind = "Melee",
+		Damage = 45,
+		Cooldown = 0.5,
+		Range = 7,
+		HitDelay = 0.12,   -- seconds into the swing when the hit lands
+		EquipTime = 0.25,
+		SpeedMultiplier = 1.12,
+	},
+	Katana = {
+		DisplayName = "Katana",
+		Slot = "Melee",
+		Kind = "Melee",
+		Damage = 70,
+		Cooldown = 0.85,
+		Range = 9.5,
+		HitDelay = 0.18,
+		EquipTime = 0.4,
+		SpeedMultiplier = 1.06,
+	},
+
+	-- Utilities -------------------------------------------------------------
+	Frag = {
+		DisplayName = "Frag Grenade",
+		Slot = "Utility",
+		Kind = "Throwable",
+		Effect = "Frag",
+		Charges = 2,
+		Cooldown = 1.0,
+		ThrowSpeed = 85,
+		Fuse = 2.4,
+		Damage = 110,
+		Radius = 18,
+		EquipTime = 0.3,
+		SpeedMultiplier = 1.0,
+	},
+	Flashbang = {
+		DisplayName = "Flashbang",
+		Slot = "Utility",
+		Kind = "Throwable",
+		Effect = "Flash",
+		Charges = 2,
+		Cooldown = 1.0,
+		ThrowSpeed = 90,
+		Fuse = 1.5,
+		Radius = 75,
+		FlashTime = 3.5,
+		EquipTime = 0.3,
+		SpeedMultiplier = 1.0,
+	},
+	Smoke = {
+		DisplayName = "Smoke Grenade",
+		Slot = "Utility",
+		Kind = "Throwable",
+		Effect = "Smoke",
+		Charges = 1,
+		Cooldown = 1.0,
+		ThrowSpeed = 75,
+		Fuse = 1.2,
+		Radius = 15,
+		Duration = 14,
+		EquipTime = 0.3,
+		SpeedMultiplier = 1.0,
+	},
+}
+
+-- Weapons shown in the loadout menu, per slot, in display order.
+Config.LoadoutOptions = {
+	Primary = { "AssaultRifle", "SMG", "Shotgun", "Sniper" },
+	Secondary = { "Handgun", "Revolver" },
+	Melee = { "Knife", "Katana" },
+	Utility = { "Frag", "Flashbang", "Smoke" },
+}
+
+Config.DefaultLoadout = {
+	Primary = "AssaultRifle",
+	Secondary = "Handgun",
+	Melee = "Knife",
+	Utility = "Frag",
+}
+
+---------------------------------------------------------------------------
+-- Server validation tolerances (anti-cheat leniency for lag)
+---------------------------------------------------------------------------
+
+Config.Validation = {
+	MaxOriginOffset = 10,      -- studs between claimed shot origin and server head
+	MaxHitOffset = 7,          -- studs between claimed hit point and the hit part
+	FireRateTolerance = 0.8,   -- accept shots at 80% of the true interval (jitter)
+	MeleeRangeBonus = 4,
+}
+
+---------------------------------------------------------------------------
+-- Damage / health
+---------------------------------------------------------------------------
+
+Config.MaxHealth = 100
+Config.DummyHealth = 150
+
+-- Helpers ----------------------------------------------------------------
+
+function Config.getWeapon(id)
+	return Config.Weapons[id]
+end
+
+function Config.isValidLoadoutChoice(slot, id)
+	local options = Config.LoadoutOptions[slot]
+	if not options then
+		return false
+	end
+	for _, option in options do
+		if option == id then
+			return true
+		end
+	end
+	return false
+end
+
+-- Damage multiplier for a shot travelling `distance` studs.
+function Config.falloff(weapon, distance)
+	local f = weapon.Falloff
+	if not f or distance <= f.Start then
+		return 1
+	end
+	if distance >= f.End then
+		return f.Min
+	end
+	local alpha = (distance - f.Start) / (f.End - f.Start)
+	return 1 + (f.Min - 1) * alpha
+end
+
+return Config
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX0000001C">
+			<Properties>
+				<string name="Name">Net</string>
+				<ProtectedString name="Source"><![CDATA[-- Net: creates (server) or finds (client) every RemoteEvent the game uses.
+-- Usage: Net.get("Fire"):FireServer(...)
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Net = {}
+
+local RELIABLE = {
+	-- client -> server
+	"Equip",          -- (slot)
+	"Fire",           -- (weaponId, origin, shots)
+	"Reload",         -- ()
+	"Melee",          -- (targetPart)
+	"Throw",          -- (origin, direction)
+	"SetLoadout",     -- (loadoutTable)
+
+	-- server -> client
+	"ShotReplicate",  -- (shooter, weaponId, origin, hitPoints)
+	"HitConfirm",     -- (damage, headshot, killed)
+	"Damaged",        -- (amount, sourcePosition)
+	"KillFeed",       -- (killerName, victimName, weaponName, headshot)
+	"AmmoSync",       -- (slot, mag, reserve)
+	"ChargesSync",    -- (charges)
+	"Explosion",      -- (position, radius)
+	"Flash",          -- (intensity, duration)
+	"Announce",       -- (title, subtitle, duration, color)
+	"MeleeReplicate", -- (attacker)
+}
+
+local UNRELIABLE = {
+	"AimPitch",       -- client -> server, sent many times per second
+}
+
+local folder
+local cache = {}
+
+if RunService:IsServer() then
+	folder = Instance.new("Folder")
+	folder.Name = "Net"
+
+	for _, name in RELIABLE do
+		local remote = Instance.new("RemoteEvent")
+		remote.Name = name
+		remote.Parent = folder
+		cache[name] = remote
+	end
+
+	for _, name in UNRELIABLE do
+		-- UnreliableRemoteEvent is cheaper for high-frequency data.
+		local ok, remote = pcall(Instance.new, "UnreliableRemoteEvent")
+		if not ok then
+			remote = Instance.new("RemoteEvent")
+		end
+		remote.Name = name
+		remote.Parent = folder
+		cache[name] = remote
+	end
+
+	folder.Parent = ReplicatedStorage
+
+	-- Match state lives as attributes on this folder so clients can read it.
+	local match = Instance.new("Folder")
+	match.Name = "MatchState"
+	match:SetAttribute("State", "Waiting")
+	match:SetAttribute("Round", 0)
+	match:SetAttribute("RedScore", 0)
+	match:SetAttribute("BlueScore", 0)
+	match:SetAttribute("TimeLeft", 0)
+	match.Parent = ReplicatedStorage
+else
+	folder = ReplicatedStorage:WaitForChild("Net")
+end
+
+function Net.get(name)
+	local remote = cache[name]
+	if not remote then
+		remote = folder:WaitForChild(name)
+		cache[name] = remote
+	end
+	return remote
+end
+
+function Net.matchState()
+	if RunService:IsServer() then
+		return ReplicatedStorage:FindFirstChild("MatchState")
+	end
+	return ReplicatedStorage:WaitForChild("MatchState")
+end
+
+return Net
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX0000001D">
+			<Properties>
+				<string name="Name">Spring</string>
+				<ProtectedString name="Source"><![CDATA[-- Spring: critically-dampable spring used for recoil, sway and camera kick.
+-- Works on numbers or Vector3s.
+
+local Spring = {}
+Spring.__index = Spring
+
+function Spring.new(initial, stiffness, damping)
+	local self = setmetatable({}, Spring)
+	self.Position = initial
+	self.Velocity = initial * 0
+	self.Target = initial
+	self.Stiffness = stiffness or 120
+	self.Damping = damping or 14
+	return self
+end
+
+-- Adds instant velocity (a "kick").
+function Spring:Impulse(velocity)
+	self.Velocity += velocity
+end
+
+function Spring:Update(dt)
+	-- Sub-step so large frame times stay stable.
+	local steps = math.max(1, math.ceil(dt / (1 / 120)))
+	local step = dt / steps
+	for _ = 1, steps do
+		local force = (self.Target - self.Position) * self.Stiffness
+		local damp = self.Velocity * self.Damping
+		self.Velocity += (force - damp) * step
+		self.Position += self.Velocity * step
+	end
+	return self.Position
+end
+
+function Spring:Reset(value)
+	self.Position = value
+	self.Velocity = value * 0
+	self.Target = value
+end
+
+return Spring
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX0000001E">
+			<Properties>
+				<string name="Name">Util</string>
+				<ProtectedString name="Source"><![CDATA[-- Util: small helpers shared by server and client.
+
+local Players = game:GetService("Players")
+
+local Util = {}
+
+function Util.lerp(a, b, t)
+	return a + (b - a) * t
+end
+
+function Util.smoothstep(t)
+	t = math.clamp(t, 0, 1)
+	return t * t * (3 - 2 * t)
+end
+
+-- 0 -> 1 over [a, b], clamped and smoothed.
+function Util.ramp(t, a, b)
+	if b <= a then
+		return t >= b and 1 or 0
+	end
+	return Util.smoothstep((t - a) / (b - a))
+end
+
+-- Frame-rate independent exponential approach.
+function Util.approach(current, target, speed, dt)
+	return Util.lerp(current, target, 1 - math.exp(-speed * dt))
+end
+
+-- Returns a random unit vector inside a cone around `direction`.
+function Util.spreadDirection(direction, degrees, rng)
+	if degrees <= 0 then
+		return direction.Unit
+	end
+	rng = rng or Random.new()
+	local cf = CFrame.lookAt(Vector3.zero, direction)
+	local angle = math.rad(degrees) * math.sqrt(rng:NextNumber())
+	local roll = rng:NextNumber() * math.pi * 2
+	local rotated = cf * CFrame.Angles(0, 0, roll) * CFrame.Angles(angle, 0, 0)
+	return rotated.LookVector
+end
+
+-- Finds the character model and humanoid that own `part`, if any.
+function Util.getCharacterFromPart(part)
+	if not part then
+		return nil, nil
+	end
+	local model = part:FindFirstAncestorOfClass("Model")
+	while model do
+		local humanoid = model:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			return model, humanoid
+		end
+		model = model:FindFirstAncestorOfClass("Model")
+	end
+	return nil, nil
+end
+
+function Util.isAlive(character)
+	if not character then
+		return false
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	return humanoid ~= nil and humanoid.Health > 0
+end
+
+function Util.getPlayerFromCharacter(character)
+	if not character then
+		return nil
+	end
+	return Players:GetPlayerFromCharacter(character)
+end
+
+-- True for the head and for hats/hair attached to the head.
+function Util.isHead(part)
+	if not part then
+		return false
+	end
+	if part.Name == "Head" then
+		return true
+	end
+	local accessory = part.Parent
+	if accessory and accessory:IsA("Accessory") then
+		local weld = part:FindFirstChild("AccessoryWeld")
+		if weld and ((weld.Part0 and weld.Part0.Name == "Head") or (weld.Part1 and weld.Part1.Name == "Head")) then
+			return true
+		end
+	end
+	return false
+end
+
+-- Finds the right hand (R15) or right arm (R6).
+function Util.getRightHand(character)
+	return character:FindFirstChild("RightHand") or character:FindFirstChild("Right Arm")
+end
+
+-- Returns the right and left shoulder Motor6Ds for R15 or R6 rigs.
+function Util.getShoulders(character)
+	local rightUpper = character:FindFirstChild("RightUpperArm")
+	local leftUpper = character:FindFirstChild("LeftUpperArm")
+	if rightUpper and leftUpper then
+		return rightUpper:FindFirstChild("RightShoulder"), leftUpper:FindFirstChild("LeftShoulder"), "R15"
+	end
+	local torso = character:FindFirstChild("Torso")
+	if torso then
+		return torso:FindFirstChild("Right Shoulder"), torso:FindFirstChild("Left Shoulder"), "R6"
+	end
+	return nil, nil, nil
+end
+
+-- Yields until `instance` has attribute `name` set (or timeout).
+function Util.waitForAttribute(instance, name, timeout)
+	local value = instance:GetAttribute(name)
+	if value ~= nil then
+		return value
+	end
+	local deadline = os.clock() + (timeout or 10)
+	while value == nil and os.clock() < deadline and instance.Parent do
+		task.wait()
+		value = instance:GetAttribute(name)
+	end
+	return value
+end
+
+function Util.formatTime(seconds)
+	seconds = math.max(0, math.floor(seconds))
+	return string.format("%d:%02d", seconds // 60, seconds % 60)
+end
+
+return Util
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX0000001F">
+			<Properties>
+				<string name="Name">WeaponModels</string>
+				<ProtectedString name="Source"><![CDATA[-- WeaponModels: every weapon is built out of Parts from the definitions below,
+-- so the game needs no uploaded meshes. The same definition builds both the
+-- first-person viewmodel and the third-person model held by the character.
+--
+-- Model space: the weapon points down -Z, +Y is up, and the origin is where the
+-- right hand holds it. Cylinders in Roblox run along X, so barrels use ry = 90.
+--
+-- Optional fields: HipOffset, AdsDistance, MagDrop (how far the Mag part moves
+-- during a reload), WorldScale.
+--
+-- Named parts the animation code looks for:
+--   Mag    - drops out during reload (guns)
+--   Slide  - pistol slide blowback
+--   Pump   - shotgun pump
+--   Bolt   - sniper bolt
+-- Attachments on the Handle:
+--   Muzzle, RightGrip, LeftGrip (optional), AimPoint (guns)
+
+local WeaponModels = {}
+
+local METAL = Color3.fromRGB(36, 37, 41)
+local GUNMETAL = Color3.fromRGB(68, 70, 76)
+local STEEL = Color3.fromRGB(165, 168, 175)
+local BLACK = Color3.fromRGB(18, 18, 20)
+local WOOD = Color3.fromRGB(112, 70, 38)
+local DARKWOOD = Color3.fromRGB(70, 42, 24)
+local OLIVE = Color3.fromRGB(78, 92, 54)
+local ORANGE = Color3.fromRGB(255, 132, 30)
+local RED = Color3.fromRGB(220, 50, 50)
+local GLASS = Color3.fromRGB(110, 200, 255)
+local WRAP = Color3.fromRGB(28, 28, 60)
+local GOLD = Color3.fromRGB(212, 170, 60)
+
+local CYL = Enum.PartType.Cylinder
+local BALL = Enum.PartType.Ball
+local SMOOTH = Enum.Material.SmoothPlastic
+local METALMAT = Enum.Material.Metal
+local WOODMAT = Enum.Material.Wood
+local NEON = Enum.Material.Neon
+local GLASSMAT = Enum.Material.Glass
+
+-- Shorthand for one part definition.
+-- size (sx, sy, sz), position (x, y, z), rotation in degrees (rx, ry, rz)
+local function P(name, sx, sy, sz, x, y, z, color, material, rx, ry, rz, shape)
+	return {
+		Name = name,
+		Size = Vector3.new(sx, sy, sz),
+		CFrame = CFrame.new(x, y, z)
+			* CFrame.Angles(math.rad(rx or 0), math.rad(ry or 0), math.rad(rz or 0)),
+		Color = color,
+		Material = material or SMOOTH,
+		Shape = shape,
+	}
+end
+
+-- Cylinder along Z (length first).
+local function TUBE(name, length, diameter, x, y, z, color, material)
+	return P(name, length, diameter, diameter, x, y, z, color, material or METALMAT, 0, 90, 0, CYL)
+end
+
+---------------------------------------------------------------------------
+-- Definitions
+---------------------------------------------------------------------------
+
+local Definitions = {}
+
+Definitions.AssaultRifle = {
+	Parts = {
+		P("Receiver", 0.32, 0.42, 1.5, 0, 0.2, -0.35, METAL, METALMAT),
+		P("Rail", 0.2, 0.06, 1.4, 0, 0.44, -0.4, BLACK),
+		P("Handguard", 0.3, 0.3, 0.95, 0, 0.22, -1.5, GUNMETAL),
+		P("HandguardVent", 0.31, 0.06, 0.8, 0, 0.3, -1.5, BLACK),
+		TUBE("Barrel", 0.9, 0.12, 0, 0.24, -2.3, BLACK),
+		TUBE("MuzzleBrake", 0.25, 0.17, 0, 0.24, -2.82, METAL),
+		P("Stock", 0.24, 0.36, 0.85, 0, 0.12, 0.75, BLACK),
+		P("StockPad", 0.26, 0.48, 0.12, 0, 0.05, 1.18, METAL),
+		P("Grip", 0.2, 0.5, 0.24, 0, -0.18, 0.05, BLACK, SMOOTH, -15, 0, 0),
+		P("TriggerGuard", 0.04, 0.12, 0.26, 0, -0.03, -0.14, METAL),
+		P("Mag", 0.2, 0.62, 0.32, 0, -0.22, -0.75, GUNMETAL, METALMAT, 10, 0, 0),
+		P("Sight", 0.14, 0.16, 0.3, 0, 0.55, -0.2, BLACK),
+		P("SightLens", 0.1, 0.1, 0.03, 0, 0.58, -0.36, RED, NEON),
+		P("Stripe", 0.33, 0.08, 0.5, 0, 0.3, -0.6, ORANGE),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0.24, -2.98),
+		RightGrip = Vector3.new(0, -0.15, 0.05),
+		LeftGrip = Vector3.new(0, 0.05, -1.55),
+		AimPoint = Vector3.new(0, 0.6, -0.2),
+	},
+	HipOffset = CFrame.new(0.75, -0.8, -1.25),
+	AdsDistance = 0.95,
+	WorldScale = 0.8,
+}
+
+Definitions.SMG = {
+	Parts = {
+		P("Receiver", 0.3, 0.4, 1.1, 0, 0.18, -0.3, GUNMETAL, METALMAT),
+		P("TopCover", 0.24, 0.08, 1.0, 0, 0.41, -0.3, BLACK),
+		TUBE("Barrel", 0.5, 0.12, 0, 0.22, -1.1, BLACK),
+		TUBE("Suppressor", 0.65, 0.22, 0, 0.22, -1.6, METAL),
+		P("StockBar", 0.08, 0.08, 0.75, 0.08, 0.28, 0.55, STEEL, METALMAT),
+		P("StockBarLow", 0.08, 0.08, 0.75, 0.08, 0.02, 0.55, STEEL, METALMAT),
+		P("StockPad", 0.16, 0.38, 0.08, 0.08, 0.15, 0.94, BLACK),
+		P("Grip", 0.18, 0.48, 0.22, 0, -0.17, 0.05, BLACK, SMOOTH, -12, 0, 0),
+		P("Mag", 0.16, 0.72, 0.22, 0, -0.33, -0.55, BLACK, METALMAT),
+		P("Foregrip", 0.14, 0.4, 0.14, 0, -0.15, -0.95, BLACK),
+		P("Sight", 0.1, 0.12, 0.2, 0, 0.5, -0.25, BLACK),
+		P("SightDot", 0.05, 0.05, 0.02, 0, 0.52, -0.36, GLASS, NEON),
+		P("Stripe", 0.31, 0.06, 0.4, 0, 0.25, -0.65, GLASS),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0.22, -1.95),
+		RightGrip = Vector3.new(0, -0.14, 0.05),
+		LeftGrip = Vector3.new(0, -0.22, -0.95),
+		AimPoint = Vector3.new(0, 0.54, -0.25),
+	},
+	HipOffset = CFrame.new(0.7, -0.78, -1.35),
+	AdsDistance = 1.0,
+	WorldScale = 0.8,
+}
+
+Definitions.Shotgun = {
+	Parts = {
+		P("Receiver", 0.3, 0.42, 1.2, 0, 0.2, -0.3, METAL, METALMAT),
+		TUBE("Barrel", 1.85, 0.18, 0, 0.3, -1.75, BLACK),
+		TUBE("Tube", 1.4, 0.15, 0, 0.11, -1.55, METAL),
+		P("Pump", 0.26, 0.24, 0.62, 0, 0.11, -1.3, WOOD, WOODMAT),
+		P("Stock", 0.26, 0.42, 1.05, 0, 0.08, 0.8, WOOD, WOODMAT, 8, 0, 0),
+		P("StockPad", 0.27, 0.5, 0.1, 0, 0.0, 1.33, BLACK),
+		P("Grip", 0.2, 0.45, 0.24, 0, -0.16, 0.06, WOOD, WOODMAT, -18, 0, 0),
+		P("TriggerGuard", 0.04, 0.12, 0.26, 0, -0.03, -0.14, METAL),
+		P("Mag", 0.2, 0.08, 0.5, 0, -0.02, -0.5, GOLD, METALMAT),
+		P("Bead", 0.05, 0.06, 0.05, 0, 0.42, -2.6, ORANGE, NEON),
+		P("RearSight", 0.12, 0.08, 0.06, 0, 0.44, -0.55, BLACK),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0.3, -2.72),
+		RightGrip = Vector3.new(0, -0.14, 0.06),
+		LeftGrip = Vector3.new(0, 0.02, -1.3),
+		AimPoint = Vector3.new(0, 0.48, -0.55),
+	},
+	HipOffset = CFrame.new(0.75, -0.82, -1.2),
+	AdsDistance = 0.9,
+	MagDrop = Vector3.new(0, -0.6, 0),
+	WorldScale = 0.8,
+}
+
+Definitions.Sniper = {
+	Parts = {
+		P("Receiver", 0.3, 0.4, 1.4, 0, 0.2, -0.2, OLIVE),
+		TUBE("Barrel", 2.4, 0.14, 0, 0.25, -2.1, BLACK),
+		TUBE("MuzzleBrake", 0.3, 0.2, 0, 0.25, -3.35, METAL),
+		P("Stock", 0.26, 0.5, 1.3, 0, 0.05, 0.9, OLIVE),
+		P("Cheek", 0.24, 0.12, 0.7, 0, 0.36, 0.85, BLACK),
+		P("StockPad", 0.27, 0.6, 0.1, 0, 0.0, 1.58, BLACK),
+		P("Grip", 0.2, 0.48, 0.24, 0, -0.18, 0.08, OLIVE, SMOOTH, -20, 0, 0),
+		TUBE("ScopeBody", 1.3, 0.26, 0, 0.64, -0.25, BLACK),
+		TUBE("ScopeFront", 0.3, 0.36, 0, 0.64, -0.95, BLACK),
+		TUBE("ScopeRear", 0.25, 0.32, 0, 0.64, 0.45, BLACK),
+		P("ScopeLens", 0.3, 0.3, 0.02, 0, 0.64, -1.11, GLASS, GLASSMAT),
+		P("MountFront", 0.12, 0.2, 0.12, 0, 0.45, -0.6, METAL),
+		P("MountRear", 0.12, 0.2, 0.12, 0, 0.45, 0.1, METAL),
+		P("Bolt", 0.3, 0.08, 0.08, 0.22, 0.3, 0.25, STEEL, METALMAT),
+		P("BoltKnob", 0.14, 0.14, 0.14, 0.38, 0.3, 0.25, BLACK, SMOOTH, 0, 0, 0, BALL),
+		P("Mag", 0.2, 0.3, 0.42, 0, -0.08, -0.4, BLACK, METALMAT),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0.25, -3.52),
+		RightGrip = Vector3.new(0, -0.15, 0.08),
+		LeftGrip = Vector3.new(0, 0.05, -1.2),
+		AimPoint = Vector3.new(0, 0.64, 0.6),
+	},
+	HipOffset = CFrame.new(0.75, -0.85, -1.15),
+	AdsDistance = 0.6,
+	WorldScale = 0.75,
+}
+
+Definitions.Handgun = {
+	Parts = {
+		P("Slide", 0.22, 0.24, 0.9, 0, 0.32, -0.35, METAL, METALMAT),
+		P("SlideStripe", 0.23, 0.04, 0.6, 0, 0.36, -0.42, ORANGE),
+		P("Frame", 0.2, 0.16, 0.8, 0, 0.14, -0.3, BLACK),
+		P("Grip", 0.2, 0.58, 0.28, 0, -0.17, 0.05, BLACK, SMOOTH, -12, 0, 0),
+		P("TriggerGuard", 0.04, 0.12, 0.24, 0, 0.0, -0.18, BLACK),
+		P("Mag", 0.16, 0.5, 0.22, 0, -0.2, 0.05, GUNMETAL, METALMAT, -12, 0, 0),
+		P("FrontSight", 0.04, 0.06, 0.04, 0, 0.47, -0.76, ORANGE, NEON),
+		P("RearSight", 0.14, 0.06, 0.05, 0, 0.47, 0.06, BLACK),
+		TUBE("BarrelTip", 0.06, 0.1, 0, 0.32, -0.81, BLACK),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0.32, -0.86),
+		RightGrip = Vector3.new(0, -0.1, 0.05),
+		LeftGrip = Vector3.new(-0.06, -0.24, 0.0),
+		AimPoint = Vector3.new(0, 0.5, 0.06),
+	},
+	HipOffset = CFrame.new(0.55, -0.72, -1.55),
+	AdsDistance = 1.25,
+	WorldScale = 0.85,
+}
+
+Definitions.Revolver = {
+	Parts = {
+		P("Frame", 0.22, 0.32, 0.62, 0, 0.22, -0.15, STEEL, METALMAT),
+		P("Mag", 0.4, 0.4, 0.36, 0, 0.22, -0.32, GUNMETAL, METALMAT, 0, 90, 0, CYL),
+		TUBE("Barrel", 0.9, 0.16, 0, 0.32, -0.9, STEEL),
+		P("BarrelRib", 0.08, 0.06, 0.9, 0, 0.42, -0.9, METAL),
+		P("Grip", 0.22, 0.6, 0.28, 0, -0.18, 0.12, DARKWOOD, WOODMAT, -20, 0, 0),
+		P("Hammer", 0.06, 0.12, 0.1, 0, 0.42, 0.12, METAL),
+		P("TriggerGuard", 0.04, 0.12, 0.22, 0, 0.0, -0.12, STEEL),
+		P("FrontSight", 0.04, 0.08, 0.05, 0, 0.47, -1.3, GOLD, NEON),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0.32, -1.37),
+		RightGrip = Vector3.new(0, -0.1, 0.1),
+		LeftGrip = Vector3.new(-0.06, -0.26, 0.05),
+		AimPoint = Vector3.new(0, 0.48, 0.1),
+	},
+	HipOffset = CFrame.new(0.55, -0.72, -1.5),
+	AdsDistance = 1.3,
+	MagDrop = Vector3.new(-0.45, -0.05, 0),
+	WorldScale = 0.85,
+}
+
+Definitions.Knife = {
+	Parts = {
+		P("HandlePart", 0.16, 0.18, 0.55, 0, 0, 0.02, BLACK),
+		P("Guard", 0.36, 0.08, 0.06, 0, 0.02, -0.28, STEEL, METALMAT),
+		P("Blade", 0.04, 0.24, 0.9, 0, 0.05, -0.76, STEEL, METALMAT),
+		P("Edge", 0.045, 0.05, 0.85, 0, -0.08, -0.74, Color3.fromRGB(230, 230, 235), METALMAT),
+		P("Pommel", 0.18, 0.2, 0.08, 0, 0, 0.32, ORANGE),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0.05, -1.2),
+		RightGrip = Vector3.new(0, 0, 0.02),
+	},
+	HipOffset = CFrame.new(0.85, -0.95, -1.45) * CFrame.Angles(math.rad(10), math.rad(-8), 0),
+	WorldScale = 0.9,
+}
+
+Definitions.Katana = {
+	Parts = {
+		P("HandlePart", 0.15, 0.15, 0.85, 0, 0, 0.15, WRAP),
+		P("Tsuba", 0.42, 0.42, 0.05, 0, 0, -0.28, GOLD, METALMAT),
+		P("Habaki", 0.08, 0.2, 0.1, 0, 0.02, -0.34, GOLD, METALMAT),
+		P("Blade", 0.04, 0.18, 3.1, 0, 0.02, -1.92, STEEL, METALMAT),
+		P("Edge", 0.045, 0.04, 3.0, 0, -0.08, -1.9, Color3.fromRGB(235, 235, 240), METALMAT),
+		P("Kashira", 0.17, 0.17, 0.06, 0, 0, 0.6, GOLD, METALMAT),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0.02, -3.4),
+		RightGrip = Vector3.new(0, 0, 0.1),
+	},
+	HipOffset = CFrame.new(0.9, -1.0, -1.4) * CFrame.Angles(math.rad(35), math.rad(-12), math.rad(-10)),
+	WorldScale = 0.8,
+}
+
+Definitions.Frag = {
+	Parts = {
+		P("Body", 0.5, 0.55, 0.5, 0, 0, 0, OLIVE, SMOOTH, 0, 0, 0, BALL),
+		P("Top", 0.2, 0.14, 0.2, 0, 0.3, 0, METAL, METALMAT),
+		P("Lever", 0.06, 0.38, 0.1, 0.14, 0.15, 0, STEEL, METALMAT, 0, 0, -12),
+		P("Pin", 0.14, 0.14, 0.03, -0.12, 0.34, 0, GOLD, METALMAT, 0, 0, 0, CYL),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0, 0),
+		RightGrip = Vector3.new(0, -0.05, 0.05),
+	},
+	HipOffset = CFrame.new(0.8, -0.85, -1.5),
+	WorldScale = 1,
+}
+
+Definitions.Flashbang = {
+	Parts = {
+		P("Body", 0.6, 0.32, 0.32, 0, 0, 0, STEEL, METALMAT, 0, 0, 90, CYL),
+		P("Band", 0.12, 0.34, 0.34, 0, 0.12, 0, BLACK, SMOOTH, 0, 0, 90, CYL),
+		P("Top", 0.18, 0.12, 0.18, 0, 0.36, 0, METAL, METALMAT),
+		P("Lever", 0.06, 0.42, 0.1, 0.18, 0.1, 0, BLACK, SMOOTH, 0, 0, -8),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0, 0),
+		RightGrip = Vector3.new(0, -0.05, 0.05),
+	},
+	HipOffset = CFrame.new(0.8, -0.85, -1.5),
+	WorldScale = 1,
+}
+
+Definitions.Smoke = {
+	Parts = {
+		P("Body", 0.62, 0.34, 0.34, 0, 0, 0, Color3.fromRGB(50, 55, 50), SMOOTH, 0, 0, 90, CYL),
+		P("Band", 0.1, 0.36, 0.36, 0, 0.05, 0, Color3.fromRGB(90, 220, 120), NEON, 0, 0, 90, CYL),
+		P("Top", 0.18, 0.12, 0.18, 0, 0.37, 0, METAL, METALMAT),
+		P("Lever", 0.06, 0.42, 0.1, 0.19, 0.1, 0, STEEL, METALMAT, 0, 0, -8),
+	},
+	Attachments = {
+		Muzzle = Vector3.new(0, 0, 0),
+		RightGrip = Vector3.new(0, -0.05, 0.05),
+	},
+	HipOffset = CFrame.new(0.8, -0.85, -1.5),
+	WorldScale = 1,
+}
+
+WeaponModels.Definitions = Definitions
+
+---------------------------------------------------------------------------
+-- Builder
+---------------------------------------------------------------------------
+
+local function makeSafePart(part)
+	part.Anchored = false
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.Massless = true
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+end
+
+-- Builds a weapon model.
+--   id:           weapon id from Config.Weapons
+--   isViewmodel:  true for the first-person model (anchored handle, no shadows)
+-- Returns model, welds (table of part name -> Weld) and the definition.
+function WeaponModels.build(id, isViewmodel)
+	local def = Definitions[id]
+	assert(def, "No weapon model for " .. tostring(id))
+
+	local scale = isViewmodel and 1 or (def.WorldScale or 1)
+
+	local model = Instance.new("Model")
+	model.Name = id
+
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Size = Vector3.new(0.2, 0.2, 0.2)
+	handle.Transparency = 1
+	handle.CFrame = CFrame.new()
+	makeSafePart(handle)
+	handle.Anchored = isViewmodel == true
+	handle.Parent = model
+
+	local welds = {}
+
+	for _, partDef in def.Parts do
+		local part = Instance.new("Part")
+		part.Name = partDef.Name
+		part.Size = partDef.Size * scale
+		part.Color = partDef.Color
+		part.Material = partDef.Material
+		if partDef.Shape then
+			part.Shape = partDef.Shape
+		end
+		makeSafePart(part)
+		part.CastShadow = not isViewmodel
+
+		local offset = partDef.CFrame - partDef.CFrame.Position + partDef.CFrame.Position * scale
+		part.CFrame = offset
+
+		local weld = Instance.new("Weld")
+		weld.Name = partDef.Name .. "Weld"
+		weld.Part0 = handle
+		weld.Part1 = part
+		weld.C0 = offset
+		weld.Parent = part
+
+		part.Parent = model
+		welds[partDef.Name] = weld
+	end
+
+	for name, position in def.Attachments do
+		local attachment = Instance.new("Attachment")
+		attachment.Name = name
+		attachment.Position = position * scale
+		attachment.Parent = handle
+	end
+
+	model.PrimaryPart = handle
+	return model, welds, def
+end
+
+function WeaponModels.getDefinition(id)
+	return Definitions[id]
+end
+
+return WeaponModels
+]]></ProtectedString>
+			</Properties>
+		</Item>
+	</Item>
+</roblox>

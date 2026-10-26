@@ -1,0 +1,1700 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Item class="Script" referent="RBX00000025">
+		<Properties>
+			<string name="Name">Server</string>
+			<ProtectedString name="Source"><![CDATA[-- Server entry point. Builds the map, sets up remotes and starts the match loop.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared.Config)
+local Net = require(Shared.Net) -- creates the RemoteEvents
+local Util = require(Shared.Util)
+
+local MapBuilder = require(script.MapBuilder)
+local CombatServer = require(script.CombatServer)
+local MatchManager = require(script.MatchManager)
+local Dummies = require(script.Dummies)
+
+Players.CharacterAutoLoads = false
+
+MapBuilder.build()
+Dummies.spawnAll(MapBuilder.getDummySpots())
+CombatServer.init()
+
+---------------------------------------------------------------------------
+-- Loadouts
+---------------------------------------------------------------------------
+
+local loadouts = {} -- [Player] = { Primary = id, ... }
+
+local function getLoadout(player)
+	local loadout = loadouts[player]
+	if not loadout then
+		loadout = table.clone(Config.DefaultLoadout)
+		loadouts[player] = loadout
+	end
+	return loadout
+end
+
+---------------------------------------------------------------------------
+-- Spawning
+---------------------------------------------------------------------------
+
+local spawnTokens = {} -- [Player] = number, so stale respawn timers do nothing
+
+local function spawnPlayer(player, cframe)
+	if not player.Parent then
+		return
+	end
+	spawnTokens[player] = (spawnTokens[player] or 0) + 1
+	CombatServer.clear(player)
+
+	player:LoadCharacter()
+	local character = player.Character
+	if not character then
+		return
+	end
+
+	-- Stop health regen; damage should stick in a duel.
+	local regen = character:FindFirstChild("Health")
+	if regen and regen:IsA("Script") then
+		regen:Destroy()
+	end
+
+	local humanoid = character:WaitForChild("Humanoid")
+	humanoid.MaxHealth = Config.MaxHealth
+	humanoid.Health = Config.MaxHealth
+	humanoid.UseJumpPower = true
+	humanoid.JumpPower = Config.Movement.JumpPower
+	humanoid.BreakJointsOnDeath = false
+
+	character:PivotTo(cframe)
+	CombatServer.onCharacterSpawned(player, character, getLoadout(player))
+
+	local token = spawnTokens[player]
+	humanoid.Died:Connect(function()
+		if not character:GetAttribute("DeathCounted") then
+			-- Died without a killer (fell off, reset). Still counts as a death.
+			character:SetAttribute("DeathCounted", true)
+			local stats = player:FindFirstChild("leaderstats")
+			local deaths = stats and stats:FindFirstChild("Deaths")
+			if deaths then
+				deaths.Value += 1
+			end
+			Net.get("KillFeed"):FireAllClients("", player.DisplayName, "", false)
+		end
+		CombatServer.clear(player)
+
+		if MatchManager.shouldRespawnInLobby(player) then
+			task.wait(Config.Match.LobbyRespawnTime)
+			if spawnTokens[player] == token and player.Parent and MatchManager.shouldRespawnInLobby(player) then
+				spawnPlayer(player, MapBuilder.getLobbySpawn())
+			end
+		end
+	end)
+end
+
+MatchManager.init(MapBuilder, spawnPlayer)
+CombatServer.canDamage = MatchManager.canDamage
+
+---------------------------------------------------------------------------
+-- Players
+---------------------------------------------------------------------------
+
+local function setupLeaderstats(player)
+	local stats = Instance.new("Folder")
+	stats.Name = "leaderstats"
+	for _, name in { "Kills", "Deaths" } do
+		local value = Instance.new("IntValue")
+		value.Name = name
+		value.Value = 0
+		value.Parent = stats
+	end
+	stats.Parent = player
+end
+
+local function onPlayerAdded(player)
+	setupLeaderstats(player)
+	player.Neutral = true
+	spawnPlayer(player, MapBuilder.getLobbySpawn())
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, player in Players:GetPlayers() do
+	task.spawn(onPlayerAdded, player)
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	loadouts[player] = nil
+	spawnTokens[player] = nil
+end)
+
+Net.get("SetLoadout").OnServerEvent:Connect(function(player, choice)
+	if typeof(choice) ~= "table" then
+		return
+	end
+	local loadout = getLoadout(player)
+	local changed = false
+	for _, slot in Config.SlotOrder do
+		local id = choice[slot]
+		if typeof(id) == "string" and Config.isValidLoadoutChoice(slot, id) and loadout[slot] ~= id then
+			loadout[slot] = id
+			changed = true
+		end
+	end
+
+	-- In the lobby the new loadout applies straight away.
+	if changed and not MatchManager.isParticipant(player) then
+		local character = player.Character
+		if character and character.Parent and Util.isAlive(character) then
+			CombatServer.clear(player)
+			CombatServer.onCharacterSpawned(player, character, loadout)
+		end
+	end
+end)
+]]></ProtectedString>
+		</Properties>
+		<Item class="ModuleScript" referent="RBX00000021">
+			<Properties>
+				<string name="Name">CombatServer</string>
+				<ProtectedString name="Source"><![CDATA[-- CombatServer: the server is the authority on ammo, fire rate, damage and kills.
+-- Clients raycast locally for responsiveness and send their hits here; every hit
+-- is checked (range, line of sight, fire rate, position) before damage is dealt.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared.Config)
+local Net = require(Shared.Net)
+local Util = require(Shared.Util)
+local WeaponModels = require(Shared.WeaponModels)
+
+local CombatServer = {}
+
+-- Hooks filled in by the match manager.
+CombatServer.canDamage = function(_attacker, _victimPlayer, _victimCharacter)
+	return true
+end
+CombatServer.onKill = function(_killer, _victimPlayer, _victimCharacter) end
+
+local states = {} -- [Player] = combat state for the current life
+
+local mapParams = RaycastParams.new()
+mapParams.FilterType = Enum.RaycastFilterType.Include
+
+local function refreshMapParams()
+	local map = workspace:FindFirstChild("Map")
+	mapParams.FilterDescendantsInstances = map and { map } or {}
+end
+
+local function now()
+	return os.clock()
+end
+
+local function isVector3(value)
+	return typeof(value) == "Vector3" and value.X == value.X and value.Y == value.Y and value.Z == value.Z
+end
+
+local function getState(player)
+	local state = states[player]
+	if not state then
+		return nil
+	end
+	if not state.Character or not state.Character.Parent or not Util.isAlive(state.Character) then
+		return nil
+	end
+	return state
+end
+
+local function equippedWeapon(state)
+	local slot = state.Slots[state.Equipped]
+	if not slot then
+		return nil, nil
+	end
+	return Config.getWeapon(slot.Id), slot
+end
+
+local function syncAmmo(player, state, slotName)
+	local slot = state.Slots[slotName]
+	if slot and slot.Mag then
+		Net.get("AmmoSync"):FireClient(player, slotName, slot.Mag, slot.Reserve)
+	end
+end
+
+local function cancelReload(state)
+	state.ReloadToken += 1
+	state.Reloading = false
+end
+
+---------------------------------------------------------------------------
+-- Third-person weapon model
+---------------------------------------------------------------------------
+
+local function updateWorldModel(state)
+	if state.WorldModel then
+		state.WorldModel:Destroy()
+		state.WorldModel = nil
+	end
+
+	local character = state.Character
+	local slot = state.Slots[state.Equipped]
+	if not slot or not character then
+		return
+	end
+	if state.Equipped == "Utility" and state.Charges <= 0 then
+		return
+	end
+
+	local hand = Util.getRightHand(character)
+	if not hand then
+		return
+	end
+
+	local model = WeaponModels.build(slot.Id, false)
+	model.Name = "WorldWeapon"
+	local handle = model.PrimaryPart
+	local grip = handle:FindFirstChild("RightGrip")
+
+	local weld = Instance.new("Weld")
+	weld.Name = "GripWeld"
+	weld.Part0 = hand
+	weld.Part1 = handle
+	-- Point the weapon down the hand's -Y axis (the way the arm points).
+	weld.C0 = CFrame.new(0, -hand.Size.Y * 0.35, 0) * CFrame.Angles(-math.pi / 2, 0, 0)
+	weld.C1 = CFrame.new(grip and grip.Position or Vector3.zero)
+	weld.Parent = handle
+
+	handle.CFrame = hand.CFrame * weld.C0 * weld.C1:Inverse()
+	model.Parent = character
+	state.WorldModel = model
+end
+
+---------------------------------------------------------------------------
+-- Damage
+---------------------------------------------------------------------------
+
+local function registerKill(attacker, victimPlayer, victimCharacter, weaponId, headshot)
+	victimCharacter:SetAttribute("DeathCounted", true)
+
+	-- Dummy kills show in the feed but don't count toward stats.
+	local isDummy = victimCharacter:GetAttribute("IsDummy") == true
+	if attacker and attacker ~= victimPlayer and not isDummy then
+		local stats = attacker:FindFirstChild("leaderstats")
+		local kills = stats and stats:FindFirstChild("Kills")
+		if kills then
+			kills.Value += 1
+		end
+	end
+
+	if victimPlayer then
+		local stats = victimPlayer:FindFirstChild("leaderstats")
+		local deaths = stats and stats:FindFirstChild("Deaths")
+		if deaths then
+			deaths.Value += 1
+		end
+	end
+
+	local weapon = Config.getWeapon(weaponId)
+	local victimName = victimPlayer and victimPlayer.DisplayName or victimCharacter.Name
+	Net.get("KillFeed"):FireAllClients(
+		attacker and attacker.DisplayName or "World",
+		victimName,
+		weapon and weapon.DisplayName or "",
+		headshot == true
+	)
+
+	CombatServer.onKill(attacker, victimPlayer, victimCharacter)
+end
+
+-- Deals damage from `attacker` (a Player) to a character. Returns the damage dealt.
+function CombatServer.dealDamage(attacker, character, humanoid, amount, weaponId, headshot, sourcePosition)
+	if not humanoid or humanoid.Health <= 0 or amount <= 0 then
+		return 0
+	end
+	if character:FindFirstChildOfClass("ForceField") then
+		return 0
+	end
+
+	local victimPlayer = Players:GetPlayerFromCharacter(character)
+	if not CombatServer.canDamage(attacker, victimPlayer, character) then
+		return 0
+	end
+
+	amount = math.floor(amount + 0.5)
+	humanoid:TakeDamage(amount)
+	local killed = humanoid.Health <= 0
+
+	if attacker then
+		Net.get("HitConfirm"):FireClient(attacker, amount, headshot == true, killed)
+	end
+	if victimPlayer then
+		Net.get("Damaged"):FireClient(victimPlayer, amount, sourcePosition)
+	end
+
+	if killed and not character:GetAttribute("DeathCounted") then
+		registerKill(attacker, victimPlayer, character, weaponId, headshot)
+	end
+	return amount
+end
+
+---------------------------------------------------------------------------
+-- Spawning
+---------------------------------------------------------------------------
+
+function CombatServer.onCharacterSpawned(player, character, loadout)
+	local state = {
+		Character = character,
+		Loadout = table.clone(loadout),
+		Slots = {},
+		Equipped = "Primary",
+		EquippedAt = now(),
+		LastFire = 0,
+		LastMelee = 0,
+		LastThrow = 0,
+		Reloading = false,
+		ReloadToken = 0,
+		Charges = 0,
+		LastPitchSent = 0,
+	}
+
+	for _, slotName in Config.SlotOrder do
+		local id = loadout[slotName]
+		local weapon = Config.getWeapon(id)
+		if weapon then
+			local slot = { Id = id }
+			if weapon.Kind == "Gun" then
+				slot.Mag = weapon.MagSize
+				slot.Reserve = weapon.Reserve
+			elseif weapon.Kind == "Throwable" then
+				state.Charges = weapon.Charges
+			end
+			state.Slots[slotName] = slot
+			character:SetAttribute(slotName, id)
+		end
+	end
+
+	states[player] = state
+
+	character:SetAttribute("Equipped", state.Slots.Primary and state.Slots.Primary.Id or "")
+	character:SetAttribute("AimPitch", 0)
+	character:SetAttribute("LoadoutVersion", (character:GetAttribute("LoadoutVersion") or 0) + 1)
+
+	updateWorldModel(state)
+
+	syncAmmo(player, state, "Primary")
+	syncAmmo(player, state, "Secondary")
+	Net.get("ChargesSync"):FireClient(player, state.Charges)
+end
+
+function CombatServer.clear(player)
+	local state = states[player]
+	if state and state.WorldModel then
+		state.WorldModel:Destroy()
+	end
+	states[player] = nil
+end
+
+---------------------------------------------------------------------------
+-- Remote handlers
+---------------------------------------------------------------------------
+
+local function onEquip(player, slotName)
+	local state = getState(player)
+	if not state or typeof(slotName) ~= "string" or not state.Slots[slotName] then
+		return
+	end
+	if slotName == "Utility" and state.Charges <= 0 then
+		return
+	end
+	if state.Equipped == slotName then
+		return
+	end
+
+	cancelReload(state)
+	state.Equipped = slotName
+	state.EquippedAt = now()
+	state.Character:SetAttribute("Equipped", state.Slots[slotName].Id)
+	updateWorldModel(state)
+end
+
+local function headPosition(character)
+	local head = character:FindFirstChild("Head")
+	return head and head.Position or character:GetPivot().Position
+end
+
+local function onFire(player, weaponId, origin, shots)
+	local state = getState(player)
+	if not state or typeof(weaponId) ~= "string" or not isVector3(origin) or typeof(shots) ~= "table" then
+		return
+	end
+	local character = state.Character
+	if character:GetAttribute("Frozen") then
+		return
+	end
+
+	local weapon, slot = equippedWeapon(state)
+	if not weapon or weapon.Kind ~= "Gun" or slot.Id ~= weaponId then
+		return
+	end
+
+	local t = now()
+	if state.Reloading then
+		return
+	end
+	if t - state.EquippedAt < weapon.EquipTime * 0.6 then
+		return
+	end
+	if slot.Mag <= 0 then
+		syncAmmo(player, state, state.Equipped)
+		return
+	end
+	local interval = 60 / weapon.RPM
+	if t - state.LastFire < interval * Config.Validation.FireRateTolerance then
+		return
+	end
+	if (headPosition(character) - origin).Magnitude > Config.Validation.MaxOriginOffset then
+		return
+	end
+	if #shots < 1 or #shots > weapon.Pellets then
+		return
+	end
+
+	state.LastFire = t
+	slot.Mag -= 1
+
+	refreshMapParams()
+
+	local damageByHumanoid = {} -- [Humanoid] = { Character, Damage, Headshot }
+	local replicatePoints = {}
+
+	for i, shot in shots do
+		if i > weapon.Pellets then
+			break
+		end
+		if typeof(shot) ~= "table" or not isVector3(shot.Position) then
+			continue
+		end
+
+		local position = shot.Position
+		local offset = position - origin
+		local distance = offset.Magnitude
+		if distance > weapon.Range + 10 then
+			position = origin + offset.Unit * weapon.Range
+			distance = weapon.Range
+		end
+		table.insert(replicatePoints, position)
+
+		local part = shot.Part
+		if typeof(part) ~= "Instance" or not part:IsA("BasePart") or not part:IsDescendantOf(workspace) then
+			continue
+		end
+
+		local targetCharacter, humanoid = Util.getCharacterFromPart(part)
+		if not humanoid or targetCharacter == character or humanoid.Health <= 0 then
+			continue
+		end
+
+		-- The claimed hit point has to be on (or near) the part that was hit.
+		local slack = part.Size.Magnitude / 2 + Config.Validation.MaxHitOffset
+		if (position - part.Position).Magnitude > slack then
+			continue
+		end
+
+		-- Nothing solid may sit between the shooter and the hit point.
+		if distance > 0.1 then
+			local blocked = workspace:Raycast(origin, offset.Unit * distance, mapParams)
+			if blocked and (blocked.Position - origin).Magnitude < distance - 1.5 then
+				continue
+			end
+		end
+
+		local headshot = Util.isHead(part)
+		local damage = weapon.Damage * Config.falloff(weapon, distance)
+		if headshot then
+			damage *= weapon.HeadMultiplier
+		end
+
+		local entry = damageByHumanoid[humanoid]
+		if not entry then
+			entry = { Character = targetCharacter, Damage = 0, Headshot = false }
+			damageByHumanoid[humanoid] = entry
+		end
+		entry.Damage += damage
+		entry.Headshot = entry.Headshot or headshot
+	end
+
+	for humanoid, entry in damageByHumanoid do
+		CombatServer.dealDamage(player, entry.Character, humanoid, entry.Damage, weaponId, entry.Headshot, origin)
+	end
+
+	-- Show tracers and play the shot sound for everyone else.
+	local replicate = Net.get("ShotReplicate")
+	for _, other in Players:GetPlayers() do
+		if other ~= player then
+			replicate:FireClient(other, player, weaponId, origin, replicatePoints)
+		end
+	end
+end
+
+local function onReload(player)
+	local state = getState(player)
+	if not state or state.Reloading then
+		return
+	end
+	local weapon, slot = equippedWeapon(state)
+	if not weapon or weapon.Kind ~= "Gun" then
+		return
+	end
+	if slot.Mag >= weapon.MagSize or slot.Reserve <= 0 then
+		return
+	end
+
+	state.Reloading = true
+	state.ReloadToken += 1
+	local token = state.ReloadToken
+	local slotName = state.Equipped
+
+	-- Slightly shorter than the client's timer so the first shot after a
+	-- reload is never rejected because of latency.
+	task.delay(weapon.ReloadTime * 0.9, function()
+		if states[player] ~= state or state.ReloadToken ~= token then
+			return
+		end
+		local amount = math.min(weapon.MagSize - slot.Mag, slot.Reserve)
+		slot.Mag += amount
+		slot.Reserve -= amount
+		state.Reloading = false
+		syncAmmo(player, state, slotName)
+	end)
+end
+
+local function onMelee(player, targetPart)
+	local state = getState(player)
+	if not state then
+		return
+	end
+	local character = state.Character
+	if character:GetAttribute("Frozen") then
+		return
+	end
+
+	local weapon, slot = equippedWeapon(state)
+	if not weapon or weapon.Kind ~= "Melee" then
+		return
+	end
+
+	local t = now()
+	if t - state.LastMelee < weapon.Cooldown * Config.Validation.FireRateTolerance then
+		return
+	end
+	if t - state.EquippedAt < weapon.EquipTime * 0.5 then
+		return
+	end
+	state.LastMelee = t
+
+	local replicate = Net.get("MeleeReplicate")
+	for _, other in Players:GetPlayers() do
+		if other ~= player then
+			replicate:FireClient(other, player)
+		end
+	end
+
+	if typeof(targetPart) ~= "Instance" or not targetPart:IsA("BasePart") or not targetPart:IsDescendantOf(workspace) then
+		return
+	end
+
+	local targetCharacter, humanoid = Util.getCharacterFromPart(targetPart)
+	if not humanoid or targetCharacter == character or humanoid.Health <= 0 then
+		return
+	end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+
+	local toTarget = targetPart.Position - root.Position
+	if toTarget.Magnitude > weapon.Range + Config.Validation.MeleeRangeBonus then
+		return
+	end
+
+	local flat = Vector3.new(toTarget.X, 0, toTarget.Z)
+	if flat.Magnitude > 2 and flat.Unit:Dot(root.CFrame.LookVector) < 0.1 then
+		return
+	end
+
+	-- Backstab: hitting someone from behind does double damage.
+	local damage = weapon.Damage
+	local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
+	if targetRoot and flat.Magnitude > 0.5 and targetRoot.CFrame.LookVector:Dot(flat.Unit) > 0.6 then
+		damage *= 2
+	end
+
+	CombatServer.dealDamage(player, targetCharacter, humanoid, damage, slot.Id, false, root.Position)
+end
+
+---------------------------------------------------------------------------
+-- Throwables
+---------------------------------------------------------------------------
+
+local function effectsFolder()
+	return workspace:FindFirstChild("Effects") or workspace
+end
+
+local function allCharacters()
+	local list = {}
+	for _, player in Players:GetPlayers() do
+		if player.Character and Util.isAlive(player.Character) then
+			table.insert(list, player.Character)
+		end
+	end
+	local dummies = workspace:FindFirstChild("Dummies")
+	if dummies then
+		for _, dummy in dummies:GetChildren() do
+			if Util.isAlive(dummy) then
+				table.insert(list, dummy)
+			end
+		end
+	end
+	return list
+end
+
+local function hasLineOfSight(from, to)
+	local offset = to - from
+	if offset.Magnitude < 0.1 then
+		return true
+	end
+	local result = workspace:Raycast(from, offset, mapParams)
+	return result == nil
+end
+
+local function detonateFrag(attacker, weapon, position)
+	Net.get("Explosion"):FireAllClients(position, weapon.Radius, "Frag")
+	for _, character in allCharacters() do
+		local root = character:FindFirstChild("HumanoidRootPart")
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if root and humanoid then
+			local distance = (root.Position - position).Magnitude
+			if distance <= weapon.Radius and hasLineOfSight(position + Vector3.new(0, 1, 0), root.Position) then
+				local falloff = 1 - (distance / weapon.Radius)
+				local damage = weapon.Damage * math.clamp(falloff, 0, 1) ^ 0.6
+				CombatServer.dealDamage(attacker, character, humanoid, damage, "Frag", false, position)
+			end
+		end
+	end
+end
+
+local function detonateFlash(_attacker, weapon, position)
+	Net.get("Explosion"):FireAllClients(position, 6, "Flash")
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local head = character and character:FindFirstChild("Head")
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if head and root and Util.isAlive(character) then
+			local offset = position - head.Position
+			local distance = offset.Magnitude
+			if distance <= weapon.Radius and hasLineOfSight(position + Vector3.new(0, 0.5, 0), head.Position) then
+				-- Facing the flash blinds harder than looking away.
+				local pitch = character:GetAttribute("AimPitch") or 0
+				local look = (root.CFrame * CFrame.Angles(pitch, 0, 0)).LookVector
+				local facing = distance > 0.5 and look:Dot(offset.Unit) or 1
+				local intensity = math.clamp((facing + 0.4) / 1.4, 0.2, 1) * (1 - 0.6 * distance / weapon.Radius)
+				Net.get("Flash"):FireClient(player, intensity, weapon.FlashTime)
+			end
+		end
+	end
+end
+
+local function detonateSmoke(_attacker, weapon, position)
+	local cloud = Instance.new("Folder")
+	cloud.Name = "SmokeCloud"
+	cloud.Parent = effectsFolder()
+
+	local rng = Random.new()
+	local puffs = {}
+	for i = 1, 14 do
+		local radius = weapon.Radius
+		local offset = Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(0, 0.6), rng:NextNumber(-1, 1)) * radius * 0.6
+		local size = rng:NextNumber(0.8, 1.1) * radius
+		local puff = Instance.new("Part")
+		puff.Name = "Puff" .. i
+		puff.Shape = Enum.PartType.Ball
+		puff.Size = Vector3.one * 1
+		puff.Anchored = true
+		puff.CanCollide = false
+		puff.CanQuery = false
+		puff.CanTouch = false
+		puff.CastShadow = false
+		puff.Material = Enum.Material.SmoothPlastic
+		puff.Color = Color3.fromRGB(200, 205, 200)
+		puff.Transparency = 0.15
+		puff.CFrame = CFrame.new(position + offset + Vector3.new(0, size * 0.25, 0))
+		puff.Parent = cloud
+		TweenService:Create(puff, TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = Vector3.one * size,
+		}):Play()
+
+		if i <= 4 then
+			local smoke = Instance.new("Smoke")
+			smoke.Color = Color3.fromRGB(210, 215, 210)
+			smoke.Opacity = 0.6
+			smoke.Size = 10
+			smoke.RiseVelocity = 1
+			smoke.Parent = puff
+		end
+		table.insert(puffs, puff)
+	end
+
+	task.delay(weapon.Duration, function()
+		for _, puff in puffs do
+			if puff.Parent then
+				TweenService:Create(puff, TweenInfo.new(2), { Transparency = 1 }):Play()
+				local smoke = puff:FindFirstChildOfClass("Smoke")
+				if smoke then
+					smoke.Enabled = false
+				end
+			end
+		end
+	end)
+	Debris:AddItem(cloud, weapon.Duration + 2.5)
+end
+
+local DETONATE = {
+	Frag = detonateFrag,
+	Flash = detonateFlash,
+	Smoke = detonateSmoke,
+}
+
+local function rng()
+	return math.random() * 2 - 1
+end
+
+local function spawnProjectile(player, weaponId, weapon, origin, direction)
+	local ball = Instance.new("Part")
+	ball.Name = weaponId .. "Projectile"
+	ball.Shape = Enum.PartType.Ball
+	ball.Size = Vector3.one * 0.6
+	ball.Transparency = 1
+	ball.CanCollide = true
+	ball.CanQuery = false
+	ball.CustomPhysicalProperties = PhysicalProperties.new(2, 0.6, 0.35, 1, 1)
+	ball.CFrame = CFrame.new(origin)
+
+	local model = WeaponModels.build(weaponId, false)
+	local handle = model.PrimaryPart
+	handle.CFrame = ball.CFrame
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = ball
+	weld.Part1 = handle
+	weld.Parent = ball
+	model.Parent = ball
+
+	ball.Parent = effectsFolder()
+	ball:SetNetworkOwner(nil)
+	ball.AssemblyLinearVelocity = direction * weapon.ThrowSpeed + Vector3.new(0, 12, 0)
+	ball.AssemblyAngularVelocity = Vector3.new(rng(), rng(), rng()) * 8
+
+	task.delay(weapon.Fuse, function()
+		local position = ball.Position
+		ball:Destroy()
+		refreshMapParams()
+		local detonate = DETONATE[weapon.Effect]
+		if detonate then
+			detonate(player, weapon, position)
+		end
+	end)
+end
+
+local function onThrow(player, origin, direction)
+	local state = getState(player)
+	if not state or not isVector3(origin) or not isVector3(direction) then
+		return
+	end
+	local character = state.Character
+	if character:GetAttribute("Frozen") then
+		return
+	end
+
+	local slot = state.Slots.Utility
+	local weapon = slot and Config.getWeapon(slot.Id)
+	if not weapon or weapon.Kind ~= "Throwable" then
+		return
+	end
+	if state.Charges <= 0 then
+		return
+	end
+	local t = now()
+	if t - state.LastThrow < weapon.Cooldown * Config.Validation.FireRateTolerance then
+		return
+	end
+	if (headPosition(character) - origin).Magnitude > Config.Validation.MaxOriginOffset then
+		return
+	end
+	if direction.Magnitude < 0.5 then
+		return
+	end
+
+	state.LastThrow = t
+	state.Charges -= 1
+	Net.get("ChargesSync"):FireClient(player, state.Charges)
+
+	direction = direction.Unit
+	spawnProjectile(player, slot.Id, weapon, origin + direction * 2.5, direction)
+
+	if state.Equipped == "Utility" and state.Charges <= 0 then
+		updateWorldModel(state)
+	end
+end
+
+local function onAimPitch(player, pitch)
+	local state = states[player]
+	if not state or typeof(pitch) ~= "number" or pitch ~= pitch then
+		return
+	end
+	local t = now()
+	if t - state.LastPitchSent < 0.05 then
+		return
+	end
+	state.LastPitchSent = t
+	pitch = math.clamp(math.floor(pitch * 100 + 0.5) / 100, -1.4, 1.4)
+	if state.Character and state.Character.Parent then
+		state.Character:SetAttribute("AimPitch", pitch)
+	end
+end
+
+function CombatServer.init()
+	Net.get("Equip").OnServerEvent:Connect(onEquip)
+	Net.get("Fire").OnServerEvent:Connect(onFire)
+	Net.get("Reload").OnServerEvent:Connect(onReload)
+	Net.get("Melee").OnServerEvent:Connect(onMelee)
+	Net.get("Throw").OnServerEvent:Connect(onThrow)
+	Net.get("AimPitch").OnServerEvent:Connect(onAimPitch)
+
+	Players.PlayerRemoving:Connect(CombatServer.clear)
+	refreshMapParams()
+end
+
+return CombatServer
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX00000022">
+			<Properties>
+				<string name="Name">Dummies</string>
+				<ProtectedString name="Source"><![CDATA[-- Dummies: training targets in the lobby so you can test weapons solo.
+-- Some stand still, some strafe left and right. They respawn after dying.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared.Config)
+
+local Dummies = {}
+
+local folder
+
+-- Simple block rig used if Roblox can't build an avatar (e.g. API failure).
+local function buildFallbackRig()
+	local model = Instance.new("Model")
+
+	local function block(name, size, offset, color)
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Size = size
+		p.Color = color
+		p.TopSurface = Enum.SurfaceType.Smooth
+		p.BottomSurface = Enum.SurfaceType.Smooth
+		p.CFrame = CFrame.new(offset)
+		p.Parent = model
+		return p
+	end
+
+	local root = block("HumanoidRootPart", Vector3.new(2, 2, 1), Vector3.new(0, 0, 0), Color3.new(1, 1, 1))
+	root.Transparency = 1
+	local torso = block("Torso", Vector3.new(2, 2, 1), Vector3.new(0, 0, 0), Color3.fromRGB(200, 80, 60))
+	local head = block("Head", Vector3.new(1.2, 1.2, 1.2), Vector3.new(0, 1.6, 0), Color3.fromRGB(240, 200, 160))
+	local leftArm = block("Left Arm", Vector3.new(1, 2, 1), Vector3.new(-1.5, 0, 0), Color3.fromRGB(240, 200, 160))
+	local rightArm = block("Right Arm", Vector3.new(1, 2, 1), Vector3.new(1.5, 0, 0), Color3.fromRGB(240, 200, 160))
+	local leftLeg = block("Left Leg", Vector3.new(1, 2, 1), Vector3.new(-0.5, -2, 0), Color3.fromRGB(50, 60, 90))
+	local rightLeg = block("Right Leg", Vector3.new(1, 2, 1), Vector3.new(0.5, -2, 0), Color3.fromRGB(50, 60, 90))
+
+	for _, p in { torso, head, leftArm, rightArm, leftLeg, rightLeg } do
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = root
+		weld.Part1 = p
+		weld.Parent = p
+	end
+
+	local humanoid = Instance.new("Humanoid")
+	humanoid.RigType = Enum.HumanoidRigType.R6
+	humanoid.Parent = model
+	model.PrimaryPart = root
+	return model
+end
+
+local function buildRig()
+	local ok, model = pcall(function()
+		local description = Instance.new("HumanoidDescription")
+		description.HeadColor = Color3.fromRGB(240, 200, 160)
+		description.TorsoColor = Color3.fromRGB(200, 80, 60)
+		description.LeftArmColor = Color3.fromRGB(240, 200, 160)
+		description.RightArmColor = Color3.fromRGB(240, 200, 160)
+		description.LeftLegColor = Color3.fromRGB(50, 60, 90)
+		description.RightLegColor = Color3.fromRGB(50, 60, 90)
+		return Players:CreateHumanoidModelFromDescription(description, Enum.HumanoidRigType.R15)
+	end)
+	if ok and model then
+		return model
+	end
+	warn("[Dummies] Falling back to block rig:", model)
+	return buildFallbackRig()
+end
+
+local function spawnDummy(index, position, strafes)
+	local model = buildRig()
+	model.Name = "Training Dummy " .. index
+	model:SetAttribute("IsDummy", true)
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	humanoid.MaxHealth = Config.DummyHealth
+	humanoid.Health = Config.DummyHealth
+	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOn
+	humanoid.BreakJointsOnDeath = false
+
+	-- Face the lobby spawn (+Z).
+	model:PivotTo(CFrame.lookAt(position, position + Vector3.new(0, 0, 1)))
+
+	local root = model:FindFirstChild("HumanoidRootPart")
+	if root and not strafes then
+		root.Anchored = true
+	end
+
+	model.Parent = folder
+	if root and root:CanSetNetworkOwnership() then
+		root:SetNetworkOwner(nil)
+	end
+
+	if strafes and root then
+		humanoid.WalkSpeed = 12
+		task.spawn(function()
+			local left = position + Vector3.new(-6, 0, 0)
+			local right = position + Vector3.new(6, 0, 0)
+			local goRight = true
+			while model.Parent and humanoid.Health > 0 do
+				humanoid:MoveTo(goRight and right or left)
+				humanoid.MoveToFinished:Wait()
+				goRight = not goRight
+				task.wait(math.random() * 0.4)
+			end
+		end)
+	end
+
+	humanoid.Died:Connect(function()
+		task.wait(3)
+		model:Destroy()
+		spawnDummy(index, position, strafes)
+	end)
+end
+
+function Dummies.spawnAll(spots)
+	folder = workspace:FindFirstChild("Dummies")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "Dummies"
+		folder.Parent = workspace
+	end
+	for i, spot in spots do
+		task.spawn(spawnDummy, i, spot[1], spot[2])
+	end
+end
+
+return Dummies
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX00000023">
+			<Properties>
+				<string name="Name">MapBuilder</string>
+				<ProtectedString name="Source"><![CDATA[-- MapBuilder: builds the lobby and the duel arena out of parts at runtime,
+-- so the place file works without any pre-built map.
+
+local Lighting = game:GetService("Lighting")
+
+local MapBuilder = {}
+
+local LOBBY_ORIGIN = Vector3.new(0, 0, 0)
+local ARENA_ORIGIN = Vector3.new(600, 0, 0)
+
+local FLOOR = Color3.fromRGB(58, 62, 70)
+local FLOOR_LINE = Color3.fromRGB(90, 96, 108)
+local WALL = Color3.fromRGB(205, 208, 214)
+local COVER = Color3.fromRGB(150, 156, 168)
+local CRATE = Color3.fromRGB(170, 120, 70)
+local RED = Color3.fromRGB(220, 60, 60)
+local BLUE = Color3.fromRGB(60, 120, 230)
+local TRIM = Color3.fromRGB(255, 190, 60)
+
+local mapFolder
+
+local function part(props)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Material = props.Material or Enum.Material.SmoothPlastic
+	p.Color = props.Color or COVER
+	p.Size = props.Size
+	p.CFrame = props.CFrame
+	p.Name = props.Name or "Part"
+	if props.Transparency then
+		p.Transparency = props.Transparency
+	end
+	if props.CanCollide == false then
+		p.CanCollide = false
+	end
+	if props.Shape then
+		p.Shape = props.Shape
+	end
+	p.Parent = props.Parent or mapFolder
+	return p
+end
+
+-- A box sitting on the floor at (x, z) relative to `origin`.
+local function box(parent, origin, x, z, sx, sy, sz, color, material, rotY)
+	return part({
+		Parent = parent,
+		Size = Vector3.new(sx, sy, sz),
+		CFrame = CFrame.new(origin + Vector3.new(x, sy / 2, z)) * CFrame.Angles(0, math.rad(rotY or 0), 0),
+		Color = color,
+		Material = material,
+	})
+end
+
+-- Ramp from floor level up to `height`, running along +Z from (x, z).
+local function ramp(parent, origin, x, z, width, length, height, color, rotY)
+	local angle = math.atan2(height, length)
+	local slant = math.sqrt(length * length + height * height)
+	local base = CFrame.new(origin + Vector3.new(x, 0, z)) * CFrame.Angles(0, math.rad(rotY or 0), 0)
+	return part({
+		Parent = parent,
+		Name = "Ramp",
+		Size = Vector3.new(width, 1, slant),
+		CFrame = base * CFrame.new(0, height / 2, length / 2) * CFrame.Angles(-angle, 0, 0),
+		Color = color,
+		Material = Enum.Material.DiamondPlate,
+	})
+end
+
+local function floorGrid(parent, origin, sizeX, sizeZ, spacing)
+	for x = -sizeX / 2 + spacing, sizeX / 2 - spacing, spacing do
+		part({
+			Parent = parent,
+			Name = "GridLine",
+			Size = Vector3.new(0.2, 0.05, sizeZ),
+			CFrame = CFrame.new(origin + Vector3.new(x, 0.03, 0)),
+			Color = FLOOR_LINE,
+			CanCollide = false,
+		})
+	end
+	for z = -sizeZ / 2 + spacing, sizeZ / 2 - spacing, spacing do
+		part({
+			Parent = parent,
+			Name = "GridLine",
+			Size = Vector3.new(sizeX, 0.05, 0.2),
+			CFrame = CFrame.new(origin + Vector3.new(0, 0.03, z)),
+			Color = FLOOR_LINE,
+			CanCollide = false,
+		})
+	end
+end
+
+local function perimeter(parent, origin, sizeX, sizeZ, height, color)
+	local t = 2
+	box(parent, origin, 0, -sizeZ / 2 - t / 2, sizeX + t * 2, height, t, color)
+	box(parent, origin, 0, sizeZ / 2 + t / 2, sizeX + t * 2, height, t, color)
+	box(parent, origin, -sizeX / 2 - t / 2, 0, t, height, sizeZ, color)
+	box(parent, origin, sizeX / 2 + t / 2, 0, t, height, sizeZ, color)
+end
+
+---------------------------------------------------------------------------
+-- Lobby
+---------------------------------------------------------------------------
+
+local function buildLobby()
+	local folder = Instance.new("Folder")
+	folder.Name = "Lobby"
+	folder.Parent = mapFolder
+
+	local o = LOBBY_ORIGIN
+	part({
+		Parent = folder,
+		Name = "Floor",
+		Size = Vector3.new(140, 2, 140),
+		CFrame = CFrame.new(o + Vector3.new(0, -1, 0)),
+		Color = FLOOR,
+		Material = Enum.Material.Concrete,
+	})
+	floorGrid(folder, o, 140, 140, 10)
+	perimeter(folder, o, 140, 140, 14, WALL)
+
+	-- Shooting range lanes at the north end, behind the dummies.
+	for i = -2, 2 do
+		box(folder, o, i * 16, -62, 1, 4, 12, TRIM)
+	end
+	box(folder, o, 0, -68, 120, 10, 2, COVER, Enum.Material.Concrete)
+
+	-- Some cover to practise strafing around.
+	box(folder, o, -30, 10, 8, 5, 8, CRATE, Enum.Material.WoodPlanks)
+	box(folder, o, 30, 10, 8, 5, 8, CRATE, Enum.Material.WoodPlanks)
+	box(folder, o, 0, 25, 20, 4, 3, COVER)
+	box(folder, o, -45, 35, 3, 8, 20, COVER)
+	box(folder, o, 45, 35, 3, 8, 20, COVER)
+	ramp(folder, o, -20, 40, 10, 16, 6, COVER)
+	box(folder, o, -20, 61, 10, 6, 10, COVER)
+
+	-- Spawn pad marker.
+	part({
+		Parent = folder,
+		Name = "SpawnPad",
+		Size = Vector3.new(16, 0.2, 16),
+		CFrame = CFrame.new(o + Vector3.new(0, 0.1, 50)),
+		Color = TRIM,
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+	})
+
+	return folder
+end
+
+---------------------------------------------------------------------------
+-- Arena (mirrored across Z so both teams get the same layout)
+---------------------------------------------------------------------------
+
+local ARENA_X = 150
+local ARENA_Z = 220
+
+-- Cover for one half of the arena (z > 0 side). Mirrored for the other half.
+-- { x, z, sizeX, height, sizeZ, kind }
+local HALF_COVER = {
+	{ 0, 96, 30, 6, 3, "Wall" },           -- spawn shield
+	{ -40, 80, 10, 5, 10, "Crate" },
+	{ 40, 80, 10, 5, 10, "Crate" },
+	{ -52, 55, 3, 10, 30, "Wall" },
+	{ 52, 55, 3, 10, 30, "Wall" },
+	{ -20, 60, 14, 4, 4, "Low" },
+	{ 20, 60, 14, 4, 4, "Low" },
+	{ 0, 45, 6, 8, 6, "Pillar" },
+	{ -35, 35, 8, 6, 8, "Crate" },
+	{ 35, 35, 8, 6, 8, "Crate" },
+	{ -55, 20, 12, 4, 4, "Low" },
+	{ 55, 20, 12, 4, 4, "Low" },
+	{ -15, 22, 4, 9, 14, "Wall" },
+	{ 15, 22, 4, 9, 14, "Wall" },
+}
+
+local function coverStyle(kind)
+	if kind == "Crate" then
+		return CRATE, Enum.Material.WoodPlanks
+	elseif kind == "Low" then
+		return COVER, Enum.Material.Concrete
+	elseif kind == "Pillar" then
+		return WALL, Enum.Material.Marble
+	end
+	return COVER, Enum.Material.Concrete
+end
+
+local spawnCFrames = { Red = {}, Blue = {} }
+local lobbySpawns = {}
+
+local function buildArena()
+	local folder = Instance.new("Folder")
+	folder.Name = "Arena"
+	folder.Parent = mapFolder
+
+	local o = ARENA_ORIGIN
+	part({
+		Parent = folder,
+		Name = "Floor",
+		Size = Vector3.new(ARENA_X, 2, ARENA_Z),
+		CFrame = CFrame.new(o + Vector3.new(0, -1, 0)),
+		Color = FLOOR,
+		Material = Enum.Material.Concrete,
+	})
+	floorGrid(folder, o, ARENA_X, ARENA_Z, 10)
+	perimeter(folder, o, ARENA_X, ARENA_Z, 24, WALL)
+
+	for _, side in { 1, -1 } do
+		for _, c in HALF_COVER do
+			local color, material = coverStyle(c[6])
+			box(folder, o, c[1], c[2] * side, c[3], c[4], c[5], color, material)
+		end
+
+		-- Team colour strip along each spawn wall.
+		part({
+			Parent = folder,
+			Name = "TeamStrip",
+			Size = Vector3.new(ARENA_X, 0.2, 6),
+			CFrame = CFrame.new(o + Vector3.new(0, 0.1, (ARENA_Z / 2 - 4) * side)),
+			Color = side == 1 and BLUE or RED,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+		})
+
+		-- Side catwalks with ramps.
+		for _, sx in { -1, 1 } do
+			ramp(folder, o, 66 * sx, 60 * side, 10, 20, 8, COVER, side == 1 and 180 or 0)
+			box(folder, o, 66 * sx, 30 * side, 10, 8, 22, COVER, Enum.Material.DiamondPlate)
+		end
+	end
+
+	-- Centre: raised platform with ramps from both sides.
+	box(folder, o, 0, 0, 24, 6, 24, WALL, Enum.Material.Marble)
+	ramp(folder, o, 0, -30, 10, 18, 6, COVER)
+	ramp(folder, o, 0, 30, 10, 18, 6, COVER, 180)
+	box(folder, o, -10, 0, 1, 9, 24, TRIM, Enum.Material.Neon)
+	box(folder, o, 10, 0, 1, 9, 24, TRIM, Enum.Material.Neon)
+
+	-- Spawn points: Red at -Z facing +Z, Blue at +Z facing -Z.
+	for i, x in { -24, -8, 8, 24, -40, 40 } do
+		local redPos = o + Vector3.new(x, 3, -ARENA_Z / 2 + 8)
+		local bluePos = o + Vector3.new(x, 3, ARENA_Z / 2 - 8)
+		spawnCFrames.Red[i] = CFrame.lookAt(redPos, redPos + Vector3.new(0, 0, 1))
+		spawnCFrames.Blue[i] = CFrame.lookAt(bluePos, bluePos + Vector3.new(0, 0, -1))
+	end
+
+	return folder
+end
+
+local function setupLighting()
+	Lighting.ClockTime = 14.5
+	Lighting.Brightness = 2.5
+	Lighting.Ambient = Color3.fromRGB(90, 90, 100)
+	Lighting.OutdoorAmbient = Color3.fromRGB(130, 130, 140)
+	Lighting.GlobalShadows = true
+
+	if not Lighting:FindFirstChildOfClass("Atmosphere") then
+		local atmosphere = Instance.new("Atmosphere")
+		atmosphere.Density = 0.25
+		atmosphere.Haze = 1
+		atmosphere.Parent = Lighting
+	end
+	if not Lighting:FindFirstChild("ArenaBloom") then
+		local bloom = Instance.new("BloomEffect")
+		bloom.Name = "ArenaBloom"
+		bloom.Intensity = 0.6
+		bloom.Size = 20
+		bloom.Threshold = 1.6
+		bloom.Parent = Lighting
+	end
+end
+
+function MapBuilder.build()
+	local existing = workspace:FindFirstChild("Map")
+	if existing then
+		existing:Destroy()
+	end
+
+	mapFolder = Instance.new("Folder")
+	mapFolder.Name = "Map"
+	mapFolder.Parent = workspace
+
+	buildLobby()
+	buildArena()
+	setupLighting()
+
+	for i = 1, 8 do
+		local angle = (i / 8) * math.pi * 2
+		local pos = LOBBY_ORIGIN + Vector3.new(math.cos(angle) * 5, 3, 50 + math.sin(angle) * 5)
+		lobbySpawns[i] = CFrame.lookAt(pos, pos + Vector3.new(0, 0, -1))
+	end
+
+	-- Folder for runtime effects (grenades, smoke) so raycasts can ignore it.
+	local effects = Instance.new("Folder")
+	effects.Name = "Effects"
+	effects.Parent = workspace
+
+	return mapFolder
+end
+
+function MapBuilder.getTeamSpawn(teamName, index)
+	local list = spawnCFrames[teamName]
+	return list[((index - 1) % #list) + 1]
+end
+
+function MapBuilder.getLobbySpawn()
+	return lobbySpawns[math.random(1, #lobbySpawns)]
+end
+
+-- Dummy positions in the lobby range: { position, strafes }
+function MapBuilder.getDummySpots()
+	local o = LOBBY_ORIGIN
+	return {
+		{ o + Vector3.new(-32, 3, -50), false },
+		{ o + Vector3.new(-16, 3, -50), false },
+		{ o + Vector3.new(0, 3, -50), true },
+		{ o + Vector3.new(16, 3, -50), false },
+		{ o + Vector3.new(32, 3, -50), true },
+	}
+end
+
+return MapBuilder
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX00000024">
+			<Properties>
+				<string name="Name">MatchManager</string>
+				<ProtectedString name="Source"><![CDATA[-- MatchManager: lobby -> intermission -> team rounds -> victory -> lobby.
+-- Players are split into Red and Blue. Each round, the last team standing wins.
+-- First team to Config.Match.RoundsToWin rounds wins the match.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Teams = game:GetService("Teams")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared.Config)
+local Net = require(Shared.Net)
+local Util = require(Shared.Util)
+
+local MatchManager = {}
+
+local MapBuilder
+local spawnPlayer -- function(player, cframe) set by init
+
+local matchState
+local participants = {} -- [Player] = "Red" | "Blue"
+local teams = {}
+
+local RED_COLOR = Color3.fromRGB(235, 70, 70)
+local BLUE_COLOR = Color3.fromRGB(70, 140, 255)
+
+local function setState(name)
+	matchState:SetAttribute("State", name)
+end
+
+function MatchManager.getState()
+	return matchState:GetAttribute("State")
+end
+
+local function announce(title, subtitle, duration, color, targets)
+	local remote = Net.get("Announce")
+	if targets then
+		for _, player in targets do
+			remote:FireClient(player, title, subtitle or "", duration or 2, color)
+		end
+	else
+		remote:FireAllClients(title, subtitle or "", duration or 2, color)
+	end
+end
+
+local function createTeams()
+	for _, info in { { "Red", BrickColor.new("Bright red") }, { "Blue", BrickColor.new("Bright blue") } } do
+		local team = Teams:FindFirstChild(info[1])
+		if not team then
+			team = Instance.new("Team")
+			team.Name = info[1]
+			team.TeamColor = info[2]
+			team.AutoAssignable = false
+			team.Parent = Teams
+		end
+		teams[info[1]] = team
+	end
+end
+
+function MatchManager.isParticipant(player)
+	return participants[player] ~= nil
+end
+
+function MatchManager.getTeam(player)
+	return participants[player]
+end
+
+-- Who may damage whom. Dummies can always be hit; players only during a
+-- live round, and only if they are on different teams.
+function MatchManager.canDamage(attacker, victimPlayer, victimCharacter)
+	if victimCharacter and victimCharacter:GetAttribute("IsDummy") then
+		return true
+	end
+	if not attacker or not victimPlayer or attacker == victimPlayer then
+		return false
+	end
+	if MatchManager.getState() ~= "Round" then
+		return false
+	end
+	local attackerTeam = participants[attacker]
+	local victimTeam = participants[victimPlayer]
+	return attackerTeam ~= nil and victimTeam ~= nil and attackerTeam ~= victimTeam
+end
+
+local function teamMembers(teamName)
+	local list = {}
+	for player, team in participants do
+		if team == teamName and player.Parent then
+			table.insert(list, player)
+		end
+	end
+	return list
+end
+
+local function aliveCount(teamName)
+	local count = 0
+	for _, player in teamMembers(teamName) do
+		if Util.isAlive(player.Character) then
+			count += 1
+		end
+	end
+	return count
+end
+
+local function totalHealth(teamName)
+	local total = 0
+	for _, player in teamMembers(teamName) do
+		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 then
+			total += humanoid.Health
+		end
+	end
+	return total
+end
+
+local function participantList()
+	local list = {}
+	for player in participants do
+		if player.Parent then
+			table.insert(list, player)
+		end
+	end
+	return list
+end
+
+local function setFrozen(player, frozen)
+	local character = player.Character
+	if not character then
+		return
+	end
+	character:SetAttribute("Frozen", frozen)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if root then
+		root.Anchored = frozen
+	end
+end
+
+local function assignTeams()
+	table.clear(participants)
+	local list = Players:GetPlayers()
+	-- Shuffle so teams change between matches.
+	for i = #list, 2, -1 do
+		local j = math.random(1, i)
+		list[i], list[j] = list[j], list[i]
+	end
+	for i, player in list do
+		local teamName = (i % 2 == 1) and "Red" or "Blue"
+		participants[player] = teamName
+		player.Team = teams[teamName]
+		player.Neutral = false
+	end
+end
+
+local function returnToLobby(player)
+	player.Team = nil
+	player.Neutral = true
+	spawnPlayer(player, MapBuilder.getLobbySpawn())
+end
+
+local function bothTeamsPresent()
+	return #teamMembers("Red") > 0 and #teamMembers("Blue") > 0
+end
+
+local function playRound(roundNumber)
+	matchState:SetAttribute("Round", roundNumber)
+	setState("RoundStart")
+
+	-- Spawn everyone at their team's side, frozen.
+	local index = { Red = 0, Blue = 0 }
+	for _, player in participantList() do
+		local teamName = participants[player]
+		index[teamName] += 1
+		spawnPlayer(player, MapBuilder.getTeamSpawn(teamName, index[teamName]))
+		setFrozen(player, true)
+	end
+
+	announce("ROUND " .. roundNumber, "Get ready", Config.Match.FreezeTime - 0.2)
+	for t = Config.Match.FreezeTime, 1, -1 do
+		matchState:SetAttribute("TimeLeft", t)
+		task.wait(1)
+	end
+
+	for _, player in participantList() do
+		setFrozen(player, false)
+	end
+	setState("Round")
+	announce("FIGHT!", "", 1)
+
+	local deadline = os.clock() + Config.Match.RoundTime
+	local winner
+	while true do
+		local timeLeft = deadline - os.clock()
+		matchState:SetAttribute("TimeLeft", math.ceil(math.max(0, timeLeft)))
+
+		if not bothTeamsPresent() then
+			winner = #teamMembers("Red") > 0 and "Red" or "Blue"
+			break
+		end
+
+		local redAlive = aliveCount("Red")
+		local blueAlive = aliveCount("Blue")
+		if redAlive == 0 and blueAlive == 0 then
+			winner = "Draw"
+			break
+		elseif redAlive == 0 then
+			winner = "Blue"
+			break
+		elseif blueAlive == 0 then
+			winner = "Red"
+			break
+		end
+
+		if timeLeft <= 0 then
+			-- Time out: the team with more remaining health takes it.
+			local redHealth, blueHealth = totalHealth("Red"), totalHealth("Blue")
+			if redHealth > blueHealth then
+				winner = "Red"
+			elseif blueHealth > redHealth then
+				winner = "Blue"
+			else
+				winner = "Draw"
+			end
+			break
+		end
+		task.wait(0.2)
+	end
+
+	setState("RoundEnd")
+	if winner == "Red" or winner == "Blue" then
+		local key = winner .. "Score"
+		matchState:SetAttribute(key, matchState:GetAttribute(key) + 1)
+		announce(
+			string.upper(winner) .. " WINS THE ROUND",
+			string.format("Red %d - %d Blue", matchState:GetAttribute("RedScore"), matchState:GetAttribute("BlueScore")),
+			Config.Match.RoundEndTime - 0.5,
+			winner == "Red" and RED_COLOR or BLUE_COLOR
+		)
+	else
+		announce("DRAW", "Nobody scores", Config.Match.RoundEndTime - 0.5)
+	end
+	task.wait(Config.Match.RoundEndTime)
+end
+
+local function runMatch()
+	assignTeams()
+	matchState:SetAttribute("RedScore", 0)
+	matchState:SetAttribute("BlueScore", 0)
+
+	local round = 0
+	local toWin = Config.Match.RoundsToWin
+	while bothTeamsPresent()
+		and matchState:GetAttribute("RedScore") < toWin
+		and matchState:GetAttribute("BlueScore") < toWin
+	do
+		round += 1
+		playRound(round)
+	end
+
+	setState("MatchEnd")
+	local red, blue = matchState:GetAttribute("RedScore"), matchState:GetAttribute("BlueScore")
+	local winner
+	if not bothTeamsPresent() then
+		winner = #teamMembers("Red") > 0 and "Red" or "Blue"
+	else
+		winner = red > blue and "Red" or "Blue"
+	end
+	local score = string.format("Red %d - %d Blue", red, blue)
+
+	for _, player in participantList() do
+		if participants[player] == winner then
+			announce("VICTORY", score, Config.Match.MatchEndTime - 1, Color3.fromRGB(255, 210, 70), { player })
+		else
+			announce("DEFEAT", score, Config.Match.MatchEndTime - 1, Color3.fromRGB(200, 200, 200), { player })
+		end
+		setFrozen(player, true)
+	end
+	-- Spectators in the lobby get the result too.
+	for _, player in Players:GetPlayers() do
+		if not participants[player] then
+			announce(string.upper(winner) .. " WINS", score, Config.Match.MatchEndTime - 1)
+		end
+	end
+
+	task.wait(Config.Match.MatchEndTime)
+
+	local list = participantList()
+	table.clear(participants)
+	for _, player in list do
+		returnToLobby(player)
+	end
+	matchState:SetAttribute("Round", 0)
+	matchState:SetAttribute("RedScore", 0)
+	matchState:SetAttribute("BlueScore", 0)
+end
+
+local function loop()
+	while true do
+		setState("Waiting")
+		while #Players:GetPlayers() < Config.Match.MinPlayers do
+			matchState:SetAttribute("TimeLeft", 0)
+			task.wait(1)
+		end
+
+		setState("Intermission")
+		local cancelled = false
+		for t = Config.Match.IntermissionTime, 1, -1 do
+			matchState:SetAttribute("TimeLeft", t)
+			task.wait(1)
+			if #Players:GetPlayers() < Config.Match.MinPlayers then
+				cancelled = true
+				break
+			end
+		end
+
+		if not cancelled then
+			runMatch()
+		end
+	end
+end
+
+function MatchManager.onPlayerRemoving(player)
+	participants[player] = nil
+end
+
+-- Called when a character dies. Returns true if the player should respawn
+-- in the lobby (i.e. they are not in a running match).
+function MatchManager.shouldRespawnInLobby(player)
+	if not participants[player] then
+		return true
+	end
+	return false
+end
+
+function MatchManager.init(mapBuilder, spawnFunction)
+	MapBuilder = mapBuilder
+	spawnPlayer = spawnFunction
+	matchState = Net.matchState()
+	createTeams()
+	Players.PlayerRemoving:Connect(MatchManager.onPlayerRemoving)
+	task.spawn(loop)
+end
+
+return MatchManager
+]]></ProtectedString>
+			</Properties>
+		</Item>
+	</Item>
+</roblox>
